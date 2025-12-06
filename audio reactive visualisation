@@ -50,3 +50,481 @@ MIT License — feel free to adapt for your assignment. Attribution appreciated.
 
 ## Credits
 Built with p5.js and p5.sound. Example project for a Data Visualization / SciArt assignment.
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Audio-Reactive Visualization (p5.js)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- p5.js and p5.sound CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/addons/p5.sound.min.js"></script>
+  <style>
+    html,body { height:100%; margin:0; background:#0b0b0f; color:#ddd; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial; }
+    #controls { position: fixed; left: 12px; top: 12px; z-index: 20; background: rgba(10,10,12,0.6); padding:12px; border-radius:10px; backdrop-filter: blur(6px); }
+    label { display:block; font-size:13px; margin-top:8px; color:#ddd; }
+    input[type="range"] { width:200px; }
+    button, input[type=file], select { margin-top:8px; display:block; }
+    .muted { opacity:0.6; font-size:12px; margin-top:6px; }
+    #credits { position: fixed; right: 12px; bottom: 12px; color:#9aa; font-size:12px; }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+  <div id="controls" aria-label="controls">
+    <strong>Audio-Reactive Viz</strong>
+    <label>Source:
+      <select id="sourceSelect">
+        <option value="file">Upload Audio File</option>
+        <option value="mic">Microphone (Live)</option>
+      </select>
+    </label>
+
+    <input type="file" id="audioFile" accept="audio/*">
+    <button id="playPauseBtn">Play / Pause</button>
+    <button id="stopBtn">Stop</button>
+
+    <label>Sensitivity: <span id="sensVal">1.0</span>
+      <input id="sensitivity" type="range" min="0.1" max="4" step="0.05" value="1.0">
+    </label>
+
+    <label>Particle Count: <span id="countVal">400</span>
+      <input id="particleCount" type="range" min="50" max="1500" step="10" value="400">
+    </label>
+
+    <label>FFT Smoothing: <span id="smoothVal">0.9</span>
+      <input id="fftSmoothing" type="range" min="0" max="0.99" step="0.01" value="0.9">
+    </label>
+
+    <label>Palette:
+      <select id="paletteSelect">
+        <option value="neon">Neon</option>
+        <option value="warm">Warm Sunset</option>
+        <option value="cool">Cool Blues</option>
+        <option value="mono">Monochrome</option>
+      </select>
+    </label>
+
+    <div class="muted">Tip: Click Play after choosing audio. Allow mic when using live input.</div>
+  </div>
+
+  <div id="credits">Built with p5.js • Press ESC to toggle UI (for recording)</div>
+
+<script>
+/*
+  Audio-Reactive Visualization
+  - Supports file upload or microphone (live)
+  - Uses p5.sound FFT and Amplitude
+  - Particle system reacts to low/mid/high energies
+  - Simple beat detection from bass energy
+*/
+
+// ---- Global variables ----
+let fft, amp;
+let audio;               // p5.SoundFile or MediaStreamSource depending on input
+let mic;
+let playing = false;
+let particles = [];
+let particleCount = 400;
+let palette = 'neon';
+let sensitivity = 1.0;
+let smoothing = 0.9;
+let beatThreshold = 0.25;
+let lastBeatTime = 0;
+let beatHold = 200; // ms
+let uiVisible = true;
+
+// UI elements
+let fileInput, playPauseBtn, stopBtn, sourceSelect, paletteSelect;
+let sensitivitySlider, particleCountSlider, fftSmoothingSlider;
+let sensValSpan, countValSpan, smoothValSpan;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  pixelDensity(1);
+  colorMode(HSB, 360, 100, 100, 1);
+  noStroke();
+
+  // p5.sound
+  fft = new p5.FFT(smoothing, 1024);
+  amp = new p5.Amplitude();
+  amp.smooth(0.8);
+
+  // UI bindings
+  fileInput = select('#audioFile');
+  playPauseBtn = select('#playPauseBtn');
+  stopBtn = select('#stopBtn');
+  sourceSelect = select('#sourceSelect');
+  paletteSelect = select('#paletteSelect');
+  sensitivitySlider = select('#sensitivity');
+  particleCountSlider = select('#particleCount');
+  fftSmoothingSlider = select('#fftSmoothing');
+  sensValSpan = select('#sensVal');
+  countValSpan = select('#countVal');
+  smoothValSpan = select('#smoothVal');
+
+  fileInput.changed(handleFile);
+  playPauseBtn.mousePressed(togglePlayPause);
+  stopBtn.mousePressed(stopAudio);
+  sourceSelect.changed(handleSourceChange);
+  paletteSelect.changed(()=> palette = paletteSelect.value());
+  sensitivitySlider.input(()=> { sensitivity = float(sensitivitySlider.value()); sensValSpan.html(sensitivity.toFixed(2)); });
+  particleCountSlider.input(()=> { particleCount = int(particleCountSlider.value()); countValSpan.html(particleCount); adjustParticles(); });
+  fftSmoothingSlider.input(()=> { smoothing = float(fftSmoothingSlider.value()); smoothValSpan.html(smoothing); fft.setSmoothing(smoothing); });
+
+  // init particles
+  for (let i=0;i<particleCount;i++) {
+    particles.push(new Particle());
+  }
+
+  // Start with file input visible
+  handleSourceChange();
+}
+
+// ---- Audio controls and setup ----
+async function handleSourceChange() {
+  let val = sourceSelect.value();
+  if (val === 'mic') {
+    fileInput.hide();
+    if (!mic) {
+      mic = new p5.AudioIn();
+    }
+    // Note: user must press Play to start microphone
+  } else {
+    fileInput.show();
+  }
+}
+
+function handleFile(evt) {
+  let file = evt.elt.files[0];
+  if (!file) return;
+  if (audio && audio.isPlaying()) {
+    audio.stop();
+  }
+  // Create a p5.SoundFile from the blob
+  if (audio) { audio.disconnect(); audio = null; }
+  audio = loadSound(URL.createObjectURL(file), ()=> {
+    fft.setInput(audio);
+    amp.setInput(audio);
+    playing = false;
+    // Autoplay not allowed — wait for user to press Play
+  }, (err)=> {
+    console.error('Error loading audio file', err);
+  });
+}
+
+async function startMic() {
+  if (!mic) mic = new p5.AudioIn();
+  await mic.start();
+  fft.setInput(mic);
+  amp.setInput(mic);
+  playing = true;
+}
+
+function togglePlayPause() {
+  if (sourceSelect.value() === 'mic') {
+    if (!playing) {
+      // start microphone
+      userStartAudio().then(()=> startMic()).catch(e=> console.warn('Mic start canceled', e));
+    } else {
+      // stop mic
+      if (mic) mic.stop();
+      playing = false;
+    }
+    return;
+  }
+
+  // file source
+  if (!audio) {
+    alert('Upload an audio file first (mp3/wav)');
+    return;
+  }
+  if (!playing) {
+    userStartAudio().then(()=> {
+      audio.play();
+      fft.setInput(audio);
+      amp.setInput(audio);
+      playing = true;
+    }).catch(e=> console.warn('Playback blocked', e));
+  } else {
+    audio.pause();
+    playing = false;
+  }
+}
+
+function stopAudio() {
+  if (sourceSelect.value() === 'mic') {
+    if (mic) mic.stop();
+    playing = false;
+    return;
+  }
+  if (audio) {
+    audio.stop();
+    playing = false;
+  }
+}
+
+// ---- Particle class ----
+class Particle {
+  constructor() {
+    this.reset();
+  }
+  reset() {
+    // spawn near center, random orbit radius
+    this.pos = createVector(random(width*0.4, width*0.6), random(height*0.4, height*0.6));
+    this.vel = p5.Vector.random2D().mult(random(0.2, 1.5));
+    this.acc = createVector();
+    this.size = random(1,3);
+    this.life = random(200, 1000);
+    this.maxLife = this.life;
+    this.h = random(0,360);
+    this.alpha = random(0.3,0.9);
+  }
+  applyForce(f) {
+    this.acc.add(f);
+  }
+  update(lowEnergy, midEnergy, highEnergy, overallAmp) {
+    // Movement influenced by bands
+    // lowEnergy drives outward burst, midEnergy swirling, highEnergy jitter
+    // scale forces by sensitivity and amplitude
+    let s = sensitivity;
+
+    // radial push from center based on low energy
+    let center = createVector(width/2, height/2);
+    let dir = p5.Vector.sub(this.pos, center).normalize();
+    let lowPush = dir.copy().mult(map(lowEnergy, 0, 1, 0, 10) * s * 0.1);
+    this.applyForce(lowPush);
+
+    // circular motion from mid
+    let midStrength = map(midEnergy, 0, 1, -2, 2) * s * 0.02;
+    let perp = createVector(-dir.y, dir.x).mult(midStrength);
+    this.applyForce(perp);
+
+    // jitter from high
+    let jitter = p5.Vector.random2D().mult(map(highEnergy, 0, 1, 0, 2) * s * 0.3);
+    this.applyForce(jitter);
+
+    // small damping
+    this.vel.add(this.acc);
+    this.vel.mult(0.98);
+    this.pos.add(this.vel);
+    this.acc.mult(0);
+
+    // wrap edges softly
+    if (this.pos.x < -50) this.pos.x = width+50;
+    if (this.pos.x > width+50) this.pos.x = -50;
+    if (this.pos.y < -50) this.pos.y = height+50;
+    if (this.pos.y > height+50) this.pos.y = -50;
+
+    // size and color modulated by amplitude
+    let lifeRatio = this.life / this.maxLife;
+    this.size = map(overallAmp, 0, 0.8, 1, 20) * (0.6 + lifeRatio);
+    this.alpha = constrain(map(overallAmp, 0, 0.6, 0.2, 1), 0.05, 1);
+    this.h = (this.h + map(midEnergy, 0, 1, -3, 3)) % 360;
+    this.life -= 1;
+    if (this.life <= 0) this.reset();
+  }
+  draw() {
+    push();
+    translate(this.pos.x, this.pos.y);
+    // draw with palette-derived coloring
+    let col = colorFromPalette(this.h, this.alpha);
+    fill(col);
+    ellipse(0,0, this.size);
+    pop();
+  }
+}
+
+// ---- Palette helpers ----
+function colorFromPalette(hueSeed, alpha=1) {
+  switch (palette) {
+    case 'neon':
+      // bright neon spectrum, saturate
+      return color((hueSeed*1.6)%360, 100, 100, alpha);
+    case 'warm':
+      // orange/pink range
+      return color(map(hueSeed,0,360,10,45)%360, 85, 95, alpha);
+    case 'cool':
+      // blues/teal
+      return color(map(hueSeed,0,360,170,240)%360, 80, 95, alpha);
+    case 'mono':
+      // monochrome blue-ish
+      return color(210,10,95, alpha);
+    default:
+      return color(hueSeed%360, 80, 95, alpha);
+  }
+}
+
+// ---- Beat detection: based on low frequency energy ----
+function detectBeat(lowEnergy) {
+  let now = millis();
+  if (lowEnergy > beatThreshold * sensitivity) {
+    if (now - lastBeatTime > beatHold) {
+      lastBeatTime = now;
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---- Main draw loop ----
+function draw() {
+  background(8, 8, 8, 0.18); // subtle trail effect
+
+  // Get FFT spectrum and waveform
+  let spectrum = fft.analyze(); // 0-255 amplitudes
+  let waveform = fft.waveform();
+
+  // Compute bands energy (normalized 0..1)
+  let low = fft.getEnergy("bass") / 255.0;    // ~20-140Hz
+  let mid = fft.getEnergy("mid") / 255.0;     // ~140-4000Hz
+  let high = fft.getEnergy("treble") / 255.0; // ~4000-16000Hz
+  let overall = amp.getLevel(); // ~0..0.5 typically
+
+  // Improve smoothing for visuals
+  low = constrain(low, 0, 1);
+  mid = constrain(mid, 0, 1);
+  high = constrain(high, 0, 1);
+
+  // Draw soft radial gradient background reacting to bass
+  push();
+  translate(width/2, height/2);
+  let bgRadius = map(low*sensitivity, 0, 2, 100, max(width,height)*1.2);
+  let gcol = colorFromPalette((millis()*0.02)%360, map(low,0,1,0.06,0.18));
+  // big translucent ellipse
+  noStroke();
+  fill(hue(gcol), saturation(gcol), brightness(gcol), map(low,0,1,0.03,0.25));
+  ellipse(0,0, bgRadius);
+  pop();
+
+  // If beat detected, spawn burst particles or temporarily increase brightness
+  if (detectBeat(low)) {
+    for (let i=0;i<20;i++) {
+      if (particles.length < 5000) particles.push(new Particle());
+    }
+    // also draw a ring
+    drawBeatRing();
+  }
+
+  // Update and draw particles
+  for (let i=0;i<particles.length;i++) {
+    particles[i].update(low, mid, high, overall);
+    particles[i].draw();
+  }
+
+  // Limit particle count to particleCount
+  if (particles.length > particleCount) {
+    particles.splice(0, particles.length - particleCount);
+  }
+
+  // Draw frequency spectrum as translucent arcs (optional)
+  drawSpectrum(spectrum, low, mid, high);
+
+  // Small HUD when UI hidden
+  if (!uiVisible) {
+    push();
+    fill(0,0,100,0.06);
+    rect(12,12,200,36,8);
+    fill(0,0,100,0.9);
+    textSize(12);
+    textAlign(LEFT, CENTER);
+    text(`Particles: ${particles.length}`, 20, 30);
+    pop();
+  }
+}
+
+function drawBeatRing() {
+  push();
+  translate(width/2, height/2);
+  noFill();
+  strokeWeight(2);
+  let c = colorFromPalette((millis()*0.04)%360, 0.7);
+  stroke(hue(c), saturation(c), brightness(c), 0.9);
+  let r = random(min(width,height)*0.15, min(width,height)*0.45);
+  ellipse(0,0, r + random(-20,20));
+  pop();
+}
+
+function drawSpectrum(spectrum, low, mid, high) {
+  // Draw three arcs representing low/mid/high energies
+  let cx = width/2, cy = height/2;
+  push();
+  translate(cx, cy);
+  noFill();
+  strokeWeight(1.4);
+
+  // low arc
+  let c1 = colorFromPalette(10, map(low,0,1,0.08,0.5));
+  stroke(hue(c1), saturation(c1), brightness(c1), map(low,0,1,0.05,0.6));
+  ellipse(0,0, map(low,0,1,200, min(width,height)*1.3));
+
+  // mid arc
+  let c2 = colorFromPalette(180, map(mid,0,1,0.06,0.45));
+  stroke(hue(c2), saturation(c2), brightness(c2), map(mid,0,1,0.04,0.45));
+  ellipse(0,0, map(mid,0,1,150, min(width,height)*1.0));
+
+  // high arc
+  let c3 = colorFromPalette(260, map(high,0,1,0.02,0.25));
+  stroke(hue(c3), saturation(c3), brightness(c3), map(high,0,1,0.02,0.25));
+  ellipse(0,0, map(high,0,1,100, min(width,height)*0.6));
+
+  pop();
+
+  // Waveform line near bottom
+  push();
+  strokeWeight(1);
+  let wfColor = colorFromPalette((millis()*0.01)%360, 0.6);
+  stroke(hue(wfColor), saturation(wfColor), brightness(wfColor), 0.9);
+  noFill();
+  beginShape();
+  let wf = fft.waveform();
+  let len = wf.length;
+  let margin = 40;
+  for (let i=0;i<len;i+=4) {
+    let x = map(i, 0, len, margin, width - margin);
+    let y = height - map(wf[i], -1, 1, 0, 120) - margin;
+    vertex(x,y);
+  }
+  endShape();
+  pop();
+}
+
+function adjustParticles() {
+  // Add or remove particles to match particleCount
+  while (particles.length < particleCount) {
+    particles.push(new Particle());
+  }
+  while (particles.length > particleCount) {
+    particles.pop();
+  }
+}
+
+// ---- Utility & interaction ----
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}
+
+function keyPressed() {
+  if (keyCode === ESCAPE) {
+    uiVisible = !uiVisible;
+    document.getElementById('controls').style.display = uiVisible ? 'block' : 'none';
+  }
+}
+
+// Prevent accidental drag or scroll interfering with recording
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => e.preventDefault());
+
+// Good practice: stop audio when tab hidden
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    // optional: pause
+  } else {
+    // resume if needed
+  }
+});
+</script>
+</body>
+</html>
+
