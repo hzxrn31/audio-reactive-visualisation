@@ -1,0 +1,52 @@
+# Audio-Reactive Visualization
+
+This project is an audio-reactive generative artwork built with **p5.js** and **p5.sound**.  
+It translates audio (file or microphone) into motion, color, and particle-based visuals.
+
+## Files
+- `audio_reactive.html` — Main single-file web project. Open in a web browser to run.
+- `README.md` — This file.
+
+## Features
+- Supports **audio file upload** (MP3/WAV) or **live microphone** input.
+- Real-time **FFT** analysis (bass / mid / treble).
+- Particle system driven by frequency bands and amplitude.
+- Beat detection triggers burst effects.
+- UI controls: sensitivity, particle count, FFT smoothing, palette selection.
+- Press `Esc` to toggle UI for recording.
+
+## How to run (quick)
+1. Download `audio_reactive.html` to your computer.
+2. Open the file in a modern browser (Chrome, Firefox, Edge, Safari).
+   - Double-click the file or drag it into the browser window.
+
+### Notes on Microphone & Browser
+- Browsers may require a secure context (HTTPS) or local server for microphone to work reliably.
+- If microphone input doesn't start when opening the file directly, run a simple local server:
+
+#### Python 3 (in project directory)
+```bash
+python3 -m http.server 8000
+# Then open: http://localhost:8000/audio_reactive.html
+```
+
+#### Node.js (http-server)
+```bash
+npx http-server
+# Then open the provided local URL
+```
+
+## Recording Tips (for your 2 videos)
+- Video 1 (Divulgation): Explain the concept, inspiration, and what viewers are meant to take away. Use the UI to show controls and explain mappings.
+- Video 2 (Technical demo): Hide the UI (Esc) and capture the visualization fullscreen. Use a variety of tracks (or feed system audio into mic) to show different behaviours.
+
+## Troubleshooting
+- If audio file won't play, ensure the file is not corrupted and is in a supported format.
+- If mic access is denied, check browser permissions and system settings.
+- When using Chrome, running via `http://localhost` often fixes mic-related issues.
+
+## License
+MIT License — feel free to adapt for your assignment. Attribution appreciated.
+
+## Credits
+Built with p5.js and p5.sound. Example project for a Data Visualization / SciArt assignment.
